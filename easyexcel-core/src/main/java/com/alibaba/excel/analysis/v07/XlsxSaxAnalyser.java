@@ -22,6 +22,8 @@ import com.alibaba.excel.cache.ReadCache;
 import com.alibaba.excel.context.xlsx.XlsxReadContext;
 import com.alibaba.excel.enums.CellExtraTypeEnum;
 import com.alibaba.excel.exception.ExcelAnalysisException;
+import com.alibaba.excel.exception.ExcelAnalysisStopException;
+import com.alibaba.excel.exception.ExcelAnalysisStopSheetException;
 import com.alibaba.excel.metadata.CellExtra;
 import com.alibaba.excel.read.metadata.ReadSheet;
 import com.alibaba.excel.read.metadata.holder.xlsx.XlsxReadWorkbookHolder;
@@ -31,7 +33,6 @@ import com.alibaba.excel.util.SheetUtils;
 import com.alibaba.excel.util.StringUtils;
 
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.collections4.CollectionUtils;
 import org.apache.poi.openxml4j.exceptions.InvalidFormatException;
 import org.apache.poi.openxml4j.opc.OPCPackage;
 import org.apache.poi.openxml4j.opc.PackageAccess;
@@ -41,10 +42,9 @@ import org.apache.poi.openxml4j.opc.PackageRelationshipCollection;
 import org.apache.poi.openxml4j.opc.PackagingURIHelper;
 import org.apache.poi.ss.util.CellAddress;
 import org.apache.poi.xssf.eventusermodel.XSSFReader;
+import org.apache.poi.xssf.model.Comments;
 import org.apache.poi.xssf.model.CommentsTable;
-import org.apache.poi.xssf.model.SharedStringsTable;
 import org.apache.poi.xssf.usermodel.XSSFComment;
-import org.apache.poi.xssf.usermodel.XSSFRelation;
 import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTWorkbook;
 import org.openxmlformats.schemas.spreadsheetml.x2006.main.CTWorkbookPr;
 import org.openxmlformats.schemas.spreadsheetml.x2006.main.WorkbookDocument;
@@ -121,9 +121,9 @@ public class XlsxSaxAnalyser implements ExcelReadExecutor {
             sheetList.add(new ReadSheet(index, ite.getSheetName()));
             sheetMap.put(index, inputStream);
             if (xlsxReadContext.readWorkbookHolder().getExtraReadSet().contains(CellExtraTypeEnum.COMMENT)) {
-                CommentsTable commentsTable = ite.getSheetComments();
-                if (null != commentsTable) {
-                    commentsTableMap.put(index, commentsTable);
+                Comments comments = ite.getSheetComments();
+                if (comments instanceof CommentsTable) {
+                    commentsTableMap.put(index, (CommentsTable) comments);
                 }
             }
             if (xlsxReadContext.readWorkbookHolder().getExtraReadSet().contains(CellExtraTypeEnum.HYPERLINK)) {
@@ -179,7 +179,7 @@ public class XlsxSaxAnalyser implements ExcelReadExecutor {
     }
 
     private void analysisSharedStringsTable(InputStream sharedStringsTableInputStream,
-        XlsxReadWorkbookHolder xlsxReadWorkbookHolder) throws Exception {
+        XlsxReadWorkbookHolder xlsxReadWorkbookHolder) {
         ContentHandler handler = new SharedStringsTableHandler(xlsxReadWorkbookHolder.getReadCache());
         parseXmlSource(sharedStringsTableInputStream, handler);
         xlsxReadWorkbookHolder.getReadCache().putFinished();
@@ -199,7 +199,7 @@ public class XlsxSaxAnalyser implements ExcelReadExecutor {
         }
         File readTempFile = FileUtils.createCacheTmpFile();
         xlsxReadWorkbookHolder.setTempFile(readTempFile);
-        File tempFile = new File(readTempFile.getPath(), UUID.randomUUID().toString() + ".xlsx");
+        File tempFile = new File(readTempFile.getPath(), UUID.randomUUID() + ".xlsx");
         if (decryptedStream != null) {
             FileUtils.writeToFile(tempFile, decryptedStream, false);
         } else {
@@ -256,10 +256,16 @@ public class XlsxSaxAnalyser implements ExcelReadExecutor {
         for (ReadSheet readSheet : sheetList) {
             readSheet = SheetUtils.match(readSheet, xlsxReadContext);
             if (readSheet != null) {
-                xlsxReadContext.currentSheet(readSheet);
-                parseXmlSource(sheetMap.get(readSheet.getSheetNo()), new XlsxRowHandler(xlsxReadContext));
-                // Read comments
-                readComments(readSheet);
+                try {
+                    xlsxReadContext.currentSheet(readSheet);
+                    parseXmlSource(sheetMap.get(readSheet.getSheetNo()), new XlsxRowHandler(xlsxReadContext));
+                    // Read comments
+                    readComments(readSheet);
+                } catch (ExcelAnalysisStopSheetException e) {
+                    if (log.isDebugEnabled()) {
+                        log.debug("Custom stop!", e);
+                    }
+                }
                 // The last sheet is read
                 xlsxReadContext.analysisEventProcessor().endSheet(xlsxReadContext);
             }
